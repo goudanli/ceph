@@ -8,7 +8,7 @@ from teuthology.misc import deep_merge
 from teuthology.orchestra.run import CommandFailedError
 from teuthology import misc
 from teuthology.contextutil import MaxWhileTries
-from cephfs.kernel_mount import KernelMount
+from tasks.cephfs.kernel_mount import KernelMount
 
 log = logging.getLogger(__name__)
 
@@ -22,12 +22,16 @@ def task(ctx, config):
     this operation on. This lets you e.g. set up one client with
     ``ceph-fuse`` and another with ``kclient``.
 
+    ``brxnet`` should be a Private IPv4 Address range, default range is
+    [192.168.0.0/16]
+
     Example that mounts all clients::
 
         tasks:
         - ceph:
         - kclient:
         - interactive:
+        - brxnet: [192.168.0.0/16]
 
     Example that uses both ``kclient` and ``ceph-fuse``::
 
@@ -64,32 +68,32 @@ def task(ctx, config):
     else:
         raise ValueError("Invalid config object: {0} ({1})".format(config, config.__class__))
 
-    # config has been converted to a dict by this point
-    overrides = ctx.config.get('overrides', {})
-    deep_merge(config, overrides.get('kclient', {}))
-
     clients = list(misc.get_clients(ctx=ctx, roles=client_roles))
 
     test_dir = misc.get_testdir(ctx)
 
+    for id_, remote in clients:
+        KernelMount.cleanup_stale_netnses_and_bridge(remote)
+
     mounts = {}
+    overrides = ctx.config.get('overrides', {}).get('kclient', {})
     for id_, remote in clients:
         client_config = config.get("client.%s" % id_)
         if client_config is None:
             client_config = {}
 
+        deep_merge(client_config, overrides)
+
         if config.get("disabled", False) or not client_config.get('mounted', True):
             continue
 
         kernel_mount = KernelMount(
-            ctx,
-            test_dir,
-            id_,
-            remote,
-            ctx.teuthology_config.get('ipmi_user', None),
-            ctx.teuthology_config.get('ipmi_password', None),
-            ctx.teuthology_config.get('ipmi_domain', None)
-        )
+            ctx=ctx,
+            test_dir=test_dir,
+            client_id=id_,
+            client_remote=remote,
+            brxnet=ctx.teuthology_config.get('brxnet', None),
+            config=client_config)
 
         mounts[id_] = kernel_mount
 
@@ -109,9 +113,12 @@ def task(ctx, config):
                 try:
                     mount.umount()
                 except (CommandFailedError, MaxWhileTries):
-                    log.warn("Ordinary umount failed, forcing...")
+                    log.warning("Ordinary umount failed, forcing...")
                     forced = True
                     mount.umount_wait(force=True)
+
+        for id_, remote in clients:
+            KernelMount.cleanup_stale_netnses_and_bridge(remote)
 
         return forced
 

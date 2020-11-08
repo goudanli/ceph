@@ -11,12 +11,8 @@
 // @c ConfigProxy is a facade of multiple config related classes. it exposes
 // the legacy settings with arrow operator, and the new-style config with its
 // member methods.
+namespace ceph::common {
 class ConfigProxy {
-  static ConfigValues get_config_values(const ConfigProxy &config_proxy) {
-    std::lock_guard locker(config_proxy.lock);
-    return config_proxy.values;
-  }
-
   /**
    * The current values of all settings described by the schema
    */
@@ -114,7 +110,7 @@ public:
     : config{values, obs_mgr, is_daemon}
   {}
   explicit ConfigProxy(const ConfigProxy &config_proxy)
-    : values(get_config_values(config_proxy)),
+    : values(config_proxy.get_config_values()),
       config{values, obs_mgr, config_proxy.config.is_daemon}
   {}
   const ConfigValues* operator->() const noexcept {
@@ -122,6 +118,16 @@ public:
   }
   ConfigValues* operator->() noexcept {
     return &values;
+  }
+  ConfigValues get_config_values() const {
+    std::lock_guard l{lock};
+    return values;
+  }
+  void set_config_values(const ConfigValues& val) {
+#ifndef WITH_SEASTAR
+    std::lock_guard l{lock};
+#endif
+    values = val;
   }
   int get_val(const std::string_view key, char** buf, int len) const {
     std::lock_guard l{lock};
@@ -164,9 +170,9 @@ public:
     std::lock_guard l{lock};
     return config.diff(values, f, name);
   }
-  void get_my_sections(std::vector <std::string> &sections) const {
+  std::vector<std::string> get_my_sections() const {
     std::lock_guard l{lock};
-    config.get_my_sections(values, sections);
+    return config.get_my_sections(values);
   }
   int get_all_sections(std::vector<std::string>& sections) const {
     std::lock_guard l{lock};
@@ -336,3 +342,5 @@ public:
     config.get_defaults_bl(values, bl);
   }
 };
+
+}
